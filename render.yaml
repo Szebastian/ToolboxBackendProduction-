@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: toolbox-backend-api
+    env: python
+    plan: starter
+    region: ohio
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.main:app --host 0.0.0.0 --port 10000
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        value: http://localhost:4300
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: EVOLUTION_API_ENDPOINT
+        sync: false
+      - key: EVOLUTION_API_TOKEN
+        sync: false
