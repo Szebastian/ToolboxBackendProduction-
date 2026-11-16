@@ -45,6 +45,18 @@ app.add_middleware(
     max_age=3600,
 )
 
+
+@app.middleware("http")
+async def private_network_access(request, call_next):
+    """Preflight extra que Chrome exige para sitios públicos que golpean un
+    backend privado (ej: la web publicada en Netlify probando contra este
+    backend corriendo en localhost). Sin esto, el navegador cancela la llamada
+    aunque el CORS esté bien configurado."""
+    respuesta = await call_next(request)
+    if request.headers.get("access-control-request-private-network"):
+        respuesta.headers["Access-Control-Allow-Private-Network"] = "true"
+    return respuesta
+
 # Healthcheck para Render
 @app.get("/health", tags=["Health"])
 async def health_check():
