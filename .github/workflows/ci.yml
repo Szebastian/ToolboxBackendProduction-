@@ -24,7 +24,9 @@ jobs:
       - name: Chequeo de sintaxis (compileall)
         run: python -m compileall src
 
-      - name: Smoke test — la app arranca y /health responde
+      - name: Smoke test — la app arranca, /health y guardia JWT (sin servicios externos)
+        env:
+          EXIGIR_JWT: "true"
         run: |
           python - <<'PY'
           from fastapi.testclient import TestClient
@@ -36,11 +38,11 @@ jobs:
           assert r.json()["status"] == "healthy", r.text
           print("OK /health ->", r.json()["status"])
 
-          # Los routers protegidos exigen JWT solo cuando EXIGIR_JWT=true;
-          # con el default (false) todos los endpoints responden sin token.
+          # Con EXIGIR_JWT=true y sin token, un endpoint protegido responde 401
+          # ANTES de tocar la base de datos: verifica la guardia sin red.
           r2 = cliente.get("/api/v1/catalog/")
-          assert r2.status_code == 200, r2.text
-          print("OK /api/v1/catalog ->", r2.status_code)
+          assert r2.status_code == 401, f"esperado 401 sin token, dio {r2.status_code}: {r2.text}"
+          print("OK guardia JWT sin token -> 401")
           PY
 
       - name: Chequeo de seguridad — el .env no debe estar en el repo
