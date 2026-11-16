@@ -67,6 +67,10 @@ async def registrar_usuario(payload: RegistroDTO, request: Request):
     if not RegistroDTO.validar_email(payload.email):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email inválido.")
 
+    nombre_cap = _capitalizar(payload.nombre)
+    apellido_cap = _capitalizar(payload.apellido)
+    nombre_completo = f"{nombre_cap} {apellido_cap}".strip()
+
     # 1) Crear usuario en Supabase Auth
     try:
         creado = supabase.auth.admin.create_user({
@@ -86,9 +90,6 @@ async def registrar_usuario(payload: RegistroDTO, request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No se pudo crear el usuario: {detalle}")
 
     uid = creado.user.id
-    nombre_cap = _capitalizar(payload.nombre)
-    apellido_cap = _capitalizar(payload.apellido)
-    nombre_completo = f"{nombre_cap} {apellido_cap}".strip()
 
     # 2) Perfil en public.profiles. El trigger handle_new_user ya inserta la fila
     # al crear el usuario de Auth, así que usamos upsert para completar/corregir
