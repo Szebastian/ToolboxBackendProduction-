@@ -1,0 +1,53 @@
+name: CI Backend
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  ci:
+    name: Build + Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Chequeo de sintaxis (compileall)
+        run: python -m compileall src
+
+      - name: Smoke test — la app arranca y /health responde
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from src.main import app
+
+          cliente = TestClient(app)
+          r = cliente.get("/health")
+          assert r.status_code == 200, r.text
+          assert r.json()["status"] == "healthy", r.text
+          print("OK /health ->", r.json()["status"])
+
+          # Los routers protegidos exigen JWT solo cuando EXIGIR_JWT=true;
+          # con el default (false) todos los endpoints responden sin token.
+          r2 = cliente.get("/api/v1/catalog/")
+          assert r2.status_code == 200, r2.text
+          print("OK /api/v1/catalog ->", r2.status_code)
+          PY
+
+      - name: Chequeo de seguridad — el .env no debe estar en el repo
+        shell: bash
+        run: |
+          if [ -f .env ]; then
+            echo "ERROR: .env está commiteado (contiene secretos)"
+            exit 1
+          fi
+          echo "OK: no hay .env en el repo"

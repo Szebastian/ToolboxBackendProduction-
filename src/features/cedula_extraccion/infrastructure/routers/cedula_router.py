@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
+import time as _time
 
 import httpx
 from dotenv import load_dotenv
@@ -18,20 +20,26 @@ router = APIRouter(prefix="/cedulas", tags=["Cédulas"])
 MAX_BYTES = 8 * 1024 * 1024  # 8 MB
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 
-# Modelos de visión gratuitos en OpenRouter (se prueban en orden ante 429/falla)
-MODELOS = [
-    "nvidia/nemotron-3.5-super-vl:free",   # VL de razonamiento (requiere max_tokens alto)
-    "google/gemma-4-31b-it:free",          # respaldo no-reasoning
-    "google/gemma-4-26b-a4b-it:free",      # variante más chica
-    "inclusionai/ling-3.2-flash:free",     # multimodal flash
-    "particle-ai/particle-1:free",         # multimodal
-    "thinkingmachines/inkling-2-small:free",
-    "dots-studio/dots-3-note-preview:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+# Modelos de visión gratuitos en OpenRouter, lanzados por olas para cuidar la
+# cuota free (cada pedido cuenta contra el tope diario de la cuenta).
+# Ola 1 = los 2 con mejor historial: si uno lee completo, no se gastan más.
+OLEADAS = [
+    ["nvidia/nemotron-3.5-super-vl:free", "particle-ai/particle-1:free"],
+    ["inclusionai/ling-3.2-flash:free", "google/gemma-4-31b-it:free"],
+    ["google/gemma-4-26b-a4b-it:free", "dots-studio/dots-3-note-preview:free"],
+    ["thinkingmachines/inkling-2-small:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"],
 ]
 MAX_TOKENS = 1500
 TIMEOUT_SEG = 60   # techo total de la carrera (por si todo está lento)
 GRACE_SEG = 22     # si el primer resultado es flojo, esperamos esto por uno mejor
+CACHE_TTL_SEG = 900  # reintentos con la misma foto dentro de 15 min no queman cuota
+
+# Respaldo pago: cuando toda la cuota free está agotada, se usa este modelo
+# (barato, ~USD 0.001-0.004 por extracción). Se activa definiendo en .env:
+#   OPENROUTER_FALLBACK_PAGO=google/gemini-2.0-flash-001
+MODELO_FALLBACK_PAGO = os.getenv("OPENROUTER_FALLBACK_PAGO", "").strip()
+
+_cache: dict[str, tuple[float, dict]] = {}
 
 PROMPT = (
     "Sos un lector de Cédulas Verdes (DNRPA Argentina). Mirá la foto y extraé EXACTAMENTE estos campos:\n"
@@ -72,16 +80,29 @@ def _es_completo(datos: dict) -> bool:
 
 
 async def _llamar_openrouter(b64: str, mime: str) -> dict:
-    """Carrera por calidad: consulta todos los modelos gratis a la vez.
-    - Acepta enseguida el primer resultado completo (dominio+chasis+motor).
-    - Si el primero es flojo, espera GRACE_SEG más por uno mejor y devuelve el
-      de mayor puntaje (el chasis pesa doble). Los perdedores se cancelan."""
+    """Carrera por calidad en olas: consulta pocos modelos a la vez.
+
+    - Ola 1 (los 2 más confiables): si uno lee completo (dominio+chasis+motor),
+      se responde al instante — la extracción típica gasta solo 2 pedidos.
+    - Si el mejor es flojo, se lanza la ola siguiente y gana el de mayor
+      puntaje (chasis pesa doble). Techo TIMEOUT_SEG.
+    - Cache por hash de imagen: reintentos con la misma foto no queman cuota.
+    - Si toda la ola vuelve 429 (cuota free agotada), corta con mensaje claro
+      en lugar de gastar el resto de las olas en errores."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OPENROUTER_API_KEY no configurada en el backend (.env).",
         )
+
+    import hashlib
+    import time as _time
+
+    clave = hashlib.sha256(b64.encode("ascii")).hexdigest()
+    hit = _cache.get(clave)
+    if hit and (_time.monotonic() - hit[0]) < CACHE_TTL_SEG:
+        return hit[1]
 
     url_imagen = f"data:{mime};base64,{b64}"
     errores: list[str] = []
@@ -131,36 +152,77 @@ async def _llamar_openrouter(b64: str, mime: str) -> dict:
                 return None
 
         inicio = asyncio.get_running_loop().time()
-        tareas = [asyncio.create_task(probar(m)) for m in MODELOS]
         resultados: list[dict] = []
+        probados: set[str] = set()
+        tareas_todas: list[asyncio.Task] = []
         try:
-            pendientes = set(tareas)
-            while pendientes:
+            for ola in OLEADAS:
                 restante = TIMEOUT_SEG - (asyncio.get_running_loop().time() - inicio)
                 if restante <= 0:
                     break
-                hecho, pendientes = await asyncio.wait(
-                    pendientes, timeout=restante, return_when=asyncio.FIRST_COMPLETED
-                )
-                for t in hecho:
-                    if t.result():
-                        resultados.append(t.result())
-                if not resultados:
+                nuevos = [m for m in ola if m not in probados]
+                if not nuevos:
                     continue
-                mejor = max(resultados, key=lambda r: _puntaje(r["datos"]))
-                if _es_completo(mejor["datos"]):
-                    return mejor
-                # Resultado flojo: damos una gracia breve por uno mejor y, si no
-                # llega, devolvemos lo mejor recolectado (no esperamos los 60 s).
-                if asyncio.get_running_loop().time() - inicio >= GRACE_SEG:
-                    return mejor
+                probados.update(nuevos)
+                tareas = [asyncio.create_task(probar(m)) for m in nuevos]
+                tareas_todas.extend(tareas)
+                pendientes = set(tareas)
+                while pendientes:
+                    restante = TIMEOUT_SEG - (asyncio.get_running_loop().time() - inicio)
+                    if restante <= 0:
+                        break
+                    hecho, pendientes = await asyncio.wait(
+                        pendientes, timeout=max(restante, 0.1), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for t in hecho:
+                        if t.result():
+                            resultados.append(t.result())
+                    if resultados:
+                        mejor = max(resultados, key=lambda r: _puntaje(r["datos"]))
+                        if _es_completo(mejor["datos"]):
+                            _cache[clave] = (_time.monotonic(), mejor)
+                            return mejor
+                # Ola completa sin lectura completa:
+                if resultados:
+                    mejor = max(resultados, key=lambda r: _puntaje(r["datos"]))
+                    if asyncio.get_running_loop().time() - inicio >= GRACE_SEG:
+                        _cache[clave] = (_time.monotonic(), mejor)
+                        return mejor
+                # ¿Toda la ola fue 429? La cuota free está agotada: probar el
+                # respaldo pago si está configurado, o cortar con mensaje claro.
+                fallas_ola = [e for e in errores if any(m in e for m in nuevos)]
+                if fallas_ola and all("429" in f for f in fallas_ola):
+                    if not MODELO_FALLBACK_PAGO:
+                        raise HTTPException(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail=(
+                                "El límite gratuito de OpenRouter está agotado para hoy "
+                                "(se renueva a medianoche UTC, ~21:00 en Argentina). "
+                                "Alternativa: cargar USD 10 de crédito en OpenRouter "
+                                "eleva el tope a 1000 extracciones por día."
+                            ),
+                        )
+                    pago = await probar(MODELO_FALLBACK_PAGO)
+                    if pago:
+                        _cache[clave] = (_time.monotonic(), pago)
+                        return pago
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            "Cuota gratuita de OpenRouter agotada y el modelo de respaldo "
+                            f"también falló ({'; '.join(errores[-1:])}). Verificá el crédito "
+                            "cargado en OpenRouter."
+                        ),
+                    )
         finally:
             # Cancelar el resto para no dejar pedidos colgados
-            for t in tareas:
+            for t in tareas_todas:
                 t.cancel()
 
     if resultados:
-        return max(resultados, key=lambda r: _puntaje(r["datos"]))
+        mejor = max(resultados, key=lambda r: _puntaje(r["datos"]))
+        _cache[clave] = (_time.monotonic(), mejor)
+        return mejor
     raise HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail=f"No se pudo extraer la cédula con ningún modelo. Detalles: {'; '.join(errores) or 'sin respuesta'}",
@@ -169,8 +231,12 @@ async def _llamar_openrouter(b64: str, mime: str) -> dict:
 
 @router.post("/extraer")
 async def extraer_cedula(request: Request, file: UploadFile = File(...)):
-    """Recibe la foto de la Cédula Verde y devuelve los datos técnicos extraídos por visión (OpenRouter)."""
-    limitar(request, maximo=10)  # máx 10 extracciones IA por IP por hora (protege la cuota de OpenRouter)
+    """Recibe la foto de la Cédula Verde y devuelve los datos técnicos extraídos.
+
+    Estrategia gratuita: primero OCR local (RapidOCR, sin cuota ni límites);
+    si no lee dominio+chasis+motor, completa con la carrera de visión de
+    OpenRouter (olas de modelos free)."""
+    limitar(request, maximo=10)  # máx 10 extracciones por IP por hora (protege la cuota free)
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -184,10 +250,26 @@ async def extraer_cedula(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo está vacío.")
 
     b64 = base64.b64encode(data).decode("ascii")
-    resultado = await _llamar_openrouter(b64, file.content_type or "image/jpeg")
-    datos = resultado["datos"]
 
-    # Normalización: campos faltantes → None; chasis se valida aparte
+    # 1) OCR local: gratis e ilimitado
+    from src.features.cedula_extraccion.infrastructure.ocr_cedula import extraer_datos_ocr
+    datos = extraer_datos_ocr(data)
+    modelo_ia = "OCR local (RapidOCR)"
+
+    # 2) Si el OCR no leyó completo, completa con la carrera de visión
+    if not _es_completo(datos):
+        try:
+            resultado = await _llamar_openrouter(b64, file.content_type or "image/jpeg")
+            ia = resultado["datos"]
+            for k, v in ia.items():
+                if v and not datos.get(k):
+                    datos[k] = v
+            modelo_ia = resultado["modelo"]
+        except HTTPException:
+            # Cuota de visión agotada: devolvemos lo que pudo leer el OCR
+            # (el usuario completa los faltantes a mano en el formulario)
+            pass
+
     chasis = (datos.get("chasis") or "").strip().upper() or None
     advertencias: list[str] = []
     if chasis and (len(chasis) != 17 or not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", chasis)):
@@ -207,5 +289,5 @@ async def extraer_cedula(request: Request, file: UploadFile = File(...)):
             "compat": datos.get("compat") or [],
         },
         "warnings": advertencias,
-        "meta": {"modelo_ia": resultado["modelo"]},
+        "meta": {"modelo_ia": modelo_ia},
     }

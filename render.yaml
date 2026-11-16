@@ -25,6 +25,8 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: OPENROUTER_FALLBACK_PAGO
+        sync: false
       - key: EVOLUTION_API_ENDPOINT
         sync: false
       - key: EVOLUTION_API_TOKEN
