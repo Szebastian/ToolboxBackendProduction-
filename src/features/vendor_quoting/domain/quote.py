@@ -13,6 +13,7 @@ class VendorQuote:
     expires_at: datetime = field(default_factory=datetime.utcnow)
     status: str = "SUBMITTED"
     notes: Optional[str] = None
+    item_photo_url: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
 
     def is_expired(self) -> bool:

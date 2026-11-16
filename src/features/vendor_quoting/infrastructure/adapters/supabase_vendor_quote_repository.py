@@ -18,7 +18,8 @@ class SupabaseVendorQuoteRepository(IVendorQuoteRepository):
             "validity_hours": quote.validity_hours,
             "expires_at": quote.expires_at.isoformat(),
             "status": quote.status,
-            "notes": quote.notes
+            "notes": quote.notes,
+            "item_photo_url": quote.item_photo_url
         }
         res = self.supabase.table("vendor_quotes").insert(payload).execute()
         if not res.data and hasattr(res, 'error') and res.error:
@@ -39,6 +40,7 @@ class SupabaseVendorQuoteRepository(IVendorQuoteRepository):
                 expires_at=datetime.fromisoformat(q["expires_at"]),
                 status=q["status"],
                 notes=q.get("notes"),
+                item_photo_url=q.get("item_photo_url"),
                 created_at=datetime.fromisoformat(q["created_at"])
             )
             for q in res.data
@@ -59,6 +61,7 @@ class SupabaseVendorQuoteRepository(IVendorQuoteRepository):
                 expires_at=datetime.fromisoformat(q["expires_at"]),
                 status=q["status"],
                 notes=q.get("notes"),
+                item_photo_url=q.get("item_photo_url"),
                 created_at=datetime.fromisoformat(q["created_at"])
             )
             for q in res.data

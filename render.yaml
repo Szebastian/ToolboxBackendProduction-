@@ -14,10 +14,16 @@ services:
       - key: PORT
         value: 10000
       - key: FRONTEND_URL
-        value: http://localhost:4300
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: EXIGIR_JWT
+        value: "true"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: EVOLUTION_API_ENDPOINT
         sync: false

@@ -1,9 +1,11 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import Depends, APIRouter, HTTPException, status
+from src.shared_kernel.infrastructure.security.auth_dependency import usuario_actual
 from src.features.vehicles.application.register_vehicle_use_case import RegisterVehicleInputDTO, RegisterVehicleUseCase
 from src.features.vehicles.infrastructure.adapters.supabase_vehicle_repository import SupabaseVehicleRepository
 from src.shared_kernel.infrastructure.database.supabase_client import get_supabase_admin_client
 
-router = APIRouter(prefix="/vehicles", tags=["Vehicles"])
+router = APIRouter(
+    dependencies=[Depends(usuario_actual)],prefix="/vehicles", tags=["Vehicles"])
 
 def get_vehicle_repo() -> SupabaseVehicleRepository:
     supabase = get_supabase_admin_client()

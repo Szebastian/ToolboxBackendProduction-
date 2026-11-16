@@ -1,9 +1,11 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import Depends, APIRouter, HTTPException, status
+from src.shared_kernel.infrastructure.security.auth_dependency import usuario_actual
 from src.features.parts_request.application.create_parts_request_use_case import CreatePartsRequestInputDTO, CreatePartsRequestUseCase
 from src.features.parts_request.infrastructure.adapters.supabase_parts_request_repository import SupabasePartsRequestRepository
 from src.shared_kernel.infrastructure.database.supabase_client import get_supabase_admin_client
 
-router = APIRouter(prefix="/parts-requests", tags=["Parts Requests"])
+router = APIRouter(
+    dependencies=[Depends(usuario_actual)],prefix="/parts-requests", tags=["Parts Requests"])
 
 def get_parts_request_repo() -> SupabasePartsRequestRepository:
     supabase = get_supabase_admin_client()

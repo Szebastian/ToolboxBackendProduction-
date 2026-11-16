@@ -1,12 +1,14 @@
 import os
-from fastapi import APIRouter, HTTPException, status
+from fastapi import Depends, APIRouter, HTTPException, status
+from src.shared_kernel.infrastructure.security.auth_dependency import usuario_actual
 from src.features.delegation_tokens.application.dtos.delegation_dtos import DelegateRequestInputDTO
 from src.features.delegation_tokens.application.delegate_request_to_mechanic_use_case import DelegateRequestToMechanicUseCase
 from src.features.delegation_tokens.infrastructure.adapters.supabase_delegation_token_repository import SupabaseDelegationTokenRepository
 from src.features.delegation_tokens.infrastructure.adapters.evolution_whatsapp_adapter import EvolutionWhatsAppAdapter
 from src.shared_kernel.infrastructure.database.supabase_client import get_supabase_admin_client
 
-router = APIRouter(prefix="/delegations", tags=["Delegation Tokens"])
+router = APIRouter(
+    dependencies=[Depends(usuario_actual)],prefix="/delegations", tags=["Delegation Tokens"])
 
 def get_delegate_use_case() -> DelegateRequestToMechanicUseCase:
     supabase = get_supabase_admin_client()

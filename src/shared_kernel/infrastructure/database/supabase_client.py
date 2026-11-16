@@ -2,7 +2,9 @@ import os
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-load_dotenv()
+# override=True: el .env local pisa cualquier variable de entorno heredada
+# (evita que residuos de proyectos viejos en Windows envenenen la config)
+load_dotenv(override=True)
 
 _supabase_admin_client: Client | None = None
 
