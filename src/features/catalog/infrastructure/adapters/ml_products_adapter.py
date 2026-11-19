@@ -10,14 +10,17 @@ TTL configurable (default 3 días). Si la caché responde, no tocamos la red.
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from supabase import Client
 from src.features.catalog.domain.ports.ml_port import IMercadoLibreClient
 
 _ML_SEARCH = "https://api.mercadolibre.com/products/search"
+_ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 _ML_SITE = "MLA"
 _CACHE_TTL_DAYS = int(os.getenv("MLA_CACHE_TTL_DAYS", "3"))
+_TOKEN_TTL_SECONDS = 6 * 3600  # ML devuelve el token efectivo ~6h
 
 
 def _enabled() -> bool:
@@ -36,6 +39,41 @@ class MLProductsAdapter(IMercadoLibreClient):
 
     def __init__(self, supabase: Optional[Client] = None):
         self.supabase = supabase
+        self._token: str | None = None
+        self._token_expires: float = 0.0
+
+    async def _get_token(self) -> str | None:
+        """Token app-to-app (client_credentials), cacheado ~6h. None si no hay credenciales o falla."""
+        if self._token and time.time() < self._token_expires - 60:
+            return self._token
+        app_id = os.getenv("MLA_CLIENT_ID")
+        secret = os.getenv("MLA_CLIENT_SECRET")
+        if not app_id or not secret:
+            return None
+        httpx = _client()
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.post(
+                    _ML_TOKEN_URL,
+                    data={
+                        "client_id": app_id,
+                        "client_secret": secret,
+                        "grant_type": "client_credentials",
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+                )
+                if res.status_code != 200:
+                    return None
+                data = res.json()
+        except Exception:
+            return None
+        token = (data or {}).get("access_token")
+        if not token:
+            return None
+        expires_in = int((data or {}).get("expires_in") or 6 * 3600)
+        self._token = token
+        self._token_expires = time.time() + min(expires_in, _TOKEN_TTL_SECONDS)
+        return self._token
 
     async def search_products(self, query: str, vehicle_context: dict, limit: int = 5) -> List[dict]:
         if not _enabled():
@@ -49,13 +87,17 @@ class MLProductsAdapter(IMercadoLibreClient):
             return cached
         httpx = _client()
         terms = f"{q} {(vehicle_context or {}).get('brand', '')}".strip()
+        headers = {"Accept": "application/json"}
+        token = await self._get_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 res = await client.get(
                     _ML_SEARCH,
                     params={"site_id": _ML_SITE, "status": "active",
                             "q": terms, "limit": str(min(limit, 10))},
-                    headers={"Accept": "application/json"},
+                    headers=headers,
                 )
                 if res.status_code != 200:
                     return []

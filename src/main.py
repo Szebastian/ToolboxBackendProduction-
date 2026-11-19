@@ -10,6 +10,7 @@ from src.features.parts_request.infrastructure.routers.parts_request_router impo
 from src.features.vendor_quoting.infrastructure.routers.vendor_quoting_router import router as vendor_quoting_router
 from src.features.orders.infrastructure.routers.order_router import router as order_router
 from src.features.catalog.infrastructure.routers.catalog_router import router as catalog_router
+from src.features.ml.infrastructure.routers.ml_router import router as ml_router
 from src.features.uploads.infrastructure.routers.upload_router import router as upload_router
 from src.features.mechanics.infrastructure.routers.mechanic_router import router as mechanic_router
 from src.features.cedula_extraccion.infrastructure.routers.cedula_router import router as cedula_router
@@ -73,6 +74,7 @@ app.include_router(parts_request_router, prefix="/api/v1")
 app.include_router(vendor_quoting_router, prefix="/api/v1")
 app.include_router(order_router, prefix="/api/v1")
 app.include_router(catalog_router, prefix="/api/v1")
+app.include_router(ml_router, prefix="/api/v1")
 app.include_router(upload_router, prefix="/api/v1")
 app.include_router(mechanic_router, prefix="/api/v1")
 app.include_router(cedula_router, prefix="/api/v1")
